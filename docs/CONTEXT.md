@@ -5,7 +5,7 @@ should read this first. It captures what the project is, what has been built,
 what is still pending, which decisions are locked in, and the ground rules
 the user has set.
 
-Last updated: 2026-08-05 (during Task 5 completion).
+Last updated: 2026-08-11 (Task 9 complete — filter worker wired to detection, end-to-end escalation verified, 34/34 tests green).
 
 ---
 
@@ -75,9 +75,14 @@ suppress the exact storms the system exists to detect.
 | 3 | Event envelope (v/type/id/ts/payload) | `src/shared/events.js` | 5/5 | ✅ |
 | 4 | Kafka helpers + topic script | `src/shared/kafka.js`, `scripts/create-topics.js` | – | ✅ 4 topics created & idempotent |
 | 5 | Ingestion API | `src/api/server.js` | 7/7 | ✅ Real message round-tripped through broker |
+| 6 | Filter worker skeleton (Week 1 milestone) | `src/workers/filter.js` | – | ✅ Live consumer decodes and logs; deterministic partition keying verified |
+| 7 | Fingerprint (normalize + sha1) | `src/shared/fingerprint.js` | 9/9 | ✅ UUID/IPv4/hex/quoted/number/whitespace rules; ordering trap covered by tests |
+| 8 | Redis: sliding window (ZSET+Lua) / claim (`SET NX EX`) / context buffer (LPUSH+LTRIM) | `src/shared/redis.js`, `scripts/seed-redis-inspect.mjs` | 6/6 | ✅ Verified against live Redis: eviction, per-service isolation, claim once-only, LTRIM cap; keys inspected via `redis-cli` |
+| 9 | Filter worker wired to detection (pure `filter-logic.js` + thin Kafka adapter `filter.js`) | `src/workers/filter-logic.js`, `src/workers/filter.js` (rewritten), `test/filter-logic.test.js`, `vitest.config.js` | 4/4 | ✅ End-to-end: 10 same-shape logs → exactly 1 `incident escalated` line, exactly 1 message on `ai-analysis-requests` topic with correct fingerprint + samples |
 
-**Total tests: 15/15 passing** on the code that is complete. `fingerprint.test.js`
-has 9 tests currently failing — see §5.
+**Total tests: 34/34 passing.** Filter worker (`filter.js`) has no test file by design
+(see Block 6 Q5 in the Q&A log — I/O adapter, no pure logic yet; Task 9
+will extract `filter-logic.js` for testing).
 
 **Topics on the broker right now:**
 - `raw-logs` — 3 partitions, keyed by service_id
@@ -93,11 +98,7 @@ has 9 tests currently failing — see §5.
 
 | # | Task | Status |
 |---|---|---|
-| 6 | Filter worker skeleton (Week 1 milestone) | Not started |
-| 7 | Fingerprinting (`src/shared/fingerprint.js`) | **User is filling in the RULES array.** Test file complete (9 tests defining the contract). |
-| 8 | Redis sliding window / idempotency claim / context buffer | Not started |
-| 9 | Wire filter worker to detection | Not started |
-| 10 | Postgres access layer | Not started |
+| 10 | Postgres access layer | **Next up.** `src/shared/db.js` — connection pool + insertIncident / getIncident with hand-written SQL. |
 | 11 | Analyzer interface + fake | Not started |
 | 12 | AI worker (Week 2 milestone) | Not started |
 
@@ -117,6 +118,7 @@ D:\Projects\AetherInsight\
 ├── .gitignore
 ├── docs\
 │   ├── CONTEXT.md                    ← this file
+│   ├── FLOWS_AND_TRADEOFFS.md        ← revision doc: every choice, every trade-off, interview probe map
 │   └── superpowers\
 │       ├── specs\2026-08-03-aetherinsight-design.md   ← the design doc
 │       └── plans\2026-08-03-aetherinsight-foundation.md ← the active plan (Weeks 1–2)
@@ -126,20 +128,29 @@ D:\Projects\AetherInsight\
 │   │   ├── logger.js         ← pino
 │   │   ├── events.js         ← envelope + rawLogSchema + analysisRequestSchema
 │   │   ├── kafka.js          ← createKafka / createProducer / runConsumer / onShutdown / TOPICS
-│   │   └── fingerprint.js    ← normalize + fingerprint (RULES array TODO)
-│   └── api\
-│       └── server.js         ← Fastify app factory + POST /ingest + GET /healthz
+│   │   ├── fingerprint.js    ← normalize + sha1 (6 ordered rules, 9/9 tests green)
+│   │   └── redis.js          ← createRedis / recordOccurrence (Lua ZSET) / claimAnalysis (SET NX EX) / pushContext (LPUSH+LTRIM) / readContext (6/6 tests green)
+│   ├── api\
+│   │   └── server.js         ← Fastify app factory + POST /ingest + GET /healthz
+│   └── workers\
+│       ├── filter.js         ← thin Kafka adapter: consume raw-logs → processLog → produce to ai-analysis-requests on escalate
+│       └── filter-logic.js   ← pure decision logic: fingerprint + count + claim; testable without Kafka (4/4 tests)
 ├── scripts\
-│   └── create-topics.js
+│   ├── create-topics.js
+│   └── seed-redis-inspect.mjs  ← seeds win/claim/ctx keys for hand-inspection via redis-cli
 └── test\
     ├── config.test.js
     ├── events.test.js
     ├── kafka helpers have no test — verified via smoke test
     ├── api.test.js
-    └── fingerprint.test.js   ← 9 tests, waiting on RULES
+    ├── fingerprint.test.js   ← 9/9 passing
+    ├── redis.test.js         ← 6/6 passing (real Redis, injected timestamps for eviction test)
+    └── filter-logic.test.js  ← 4/4 passing (real Redis, no Kafka; escalate/suppress/counted paths)
+
+vitest.config.js               ← fileParallelism: false — serialize test files so real-Redis flushdb doesn't race across files
 
 D:\Interview_material_NR\Claude Project QnA.txt
-    ← append-only interview Q&A log, currently 1058 lines, Blocks 0–5 done
+    ← append-only interview Q&A log, currently 1528 lines, Blocks 0–8 done
 ```
 
 ---
@@ -263,8 +274,8 @@ docker compose down -v
 
 ## 10. Q&A log structure
 
-**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 1058 lines
-as of 2026-08-05. Append-only.
+**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 1528 lines
+as of 2026-08-11. Append-only.
 
 **Blocks written:**
 - **Block 0** — Architecture and design decisions (10 Q&As). Written before
@@ -274,12 +285,16 @@ as of 2026-08-05. Append-only.
 - **Block 3** — Event envelope and schema evolution (8 Q&As)
 - **Block 4** — Kafka fundamentals, partitioning, admin client (10 Q&As)
 - **Block 5** — Ingestion API, 202 semantics, dependency injection (9 Q&As)
+- **Block 6** — Filter worker, consumer groups, poison pills, graceful
+  shutdown, pino field-name collision (9 Q&As)
+- **Block 7** — Fingerprinting, Drain trade-offs, why sha1, regex ordering,
+  static-rule failure modes (10 Q&As)
+- **Block 8** — Redis primitives: ZSET vs INCR, Lua vs MULTI, defineCommand,
+  KEYS/ARGV convention, randomUUID member trick, SET NX EX vs Redlock,
+  LPUSH/LTRIM/EXPIRE ordering, real-Redis vs mocks (10 Q&As)
 
 **Blocks planned:**
-- Block 6 — Filter worker: consuming, poison pills, graceful shutdown
-- Block 7 — Fingerprinting / Drain3-style templating
-- Block 8 — Redis: ZSET sliding window, `SET NX EX`, TTL as recovery
-- Block 9 — The count-before-dedup ordering decision
+- Block 9 — The count-before-dedup ordering decision (Task 9)
 - Block 10 — Postgres access, connection pooling
 - Block 11 — The fake-analyzer seam (testability without LLM)
 - Block 12 — End-to-end trace, backpressure, observability

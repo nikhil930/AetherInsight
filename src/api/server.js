@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import { pathToFileURL } from 'node:url';
 import { encode, rawLogSchema } from '../shared/events.js';
 import { TOPICS, createProducer, onShutdown } from '../shared/kafka.js';
 import { config } from '../shared/config.js';
@@ -26,7 +27,7 @@ export async function createApp({ producer }) {
   return app;
 }
 
-if (process.argv[1] && import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const producer = await createProducer('ingestion-api');
   const app = await createApp({ producer });
   await app.listen({ port: config.API_PORT, host: '0.0.0.0' });

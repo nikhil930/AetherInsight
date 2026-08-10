@@ -7,7 +7,9 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "topics": "node scripts/create-topics.js"
+    "topics": "node scripts/create-topics.js",
+    "start:api": "node src/api/server.js",
+    "start:filter": "node src/workers/filter.js"
   },
   "keywords": [
     "kafka",
