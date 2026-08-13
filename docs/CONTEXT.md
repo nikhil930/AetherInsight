@@ -5,7 +5,7 @@ should read this first. It captures what the project is, what has been built,
 what is still pending, which decisions are locked in, and the ground rules
 the user has set.
 
-Last updated: 2026-08-13 (Task 10 complete — Postgres access layer built and verified against live DB, 40/40 tests green).
+Last updated: 2026-08-13 (Task 11 complete — analyzer interface + createFakeAnalyzer built, 50/50 tests green; Gemini env vars wired into config).
 
 ---
 
@@ -80,8 +80,9 @@ suppress the exact storms the system exists to detect.
 | 8 | Redis: sliding window (ZSET+Lua) / claim (`SET NX EX`) / context buffer (LPUSH+LTRIM) | `src/shared/redis.js`, `scripts/seed-redis-inspect.mjs` | 6/6 | ✅ Verified against live Redis: eviction, per-service isolation, claim once-only, LTRIM cap; keys inspected via `redis-cli` |
 | 9 | Filter worker wired to detection (pure `filter-logic.js` + thin Kafka adapter `filter.js`) | `src/workers/filter-logic.js`, `src/workers/filter.js` (rewritten), `test/filter-logic.test.js`, `vitest.config.js` | 4/4 | ✅ End-to-end: 10 same-shape logs → exactly 1 `incident escalated` line, exactly 1 message on `ai-analysis-requests` topic with correct fingerprint + samples |
 | 10 | Postgres access layer (pool + insertIncident + getIncident + listIncidents, hand-written SQL, no ORM) | `src/shared/db.js`, `test/db.test.js` | 6/6 | ✅ Real-Postgres tests: round-trip all columns incl. jsonb `sample_logs`, `ON CONFLICT (id) DO NOTHING` idempotency (same id twice = 1 row), listIncidents newest-first ordering, service_id filter, pagination |
+| 11 | Analyzer interface + fake (ports-and-adapters seam for the AI worker) | `src/shared/analyzer.js`, `test/analyzer.test.js` | 10/10 | ✅ Deterministic output per fingerprint, latency injection via `delayMs`, failure injection via `failEvery`, AbortSignal cancellation, buildPrompt caps samples at 5, zod boundary validation on both request and response; Gemini env vars (`GEMINI_API_KEY` optional, `GEMINI_MODEL` default `gemini-2.0-flash`) added to config |
 
-**Total tests: 40/40 passing.** Filter worker (`filter.js`) has no test file by design
+**Total tests: 50/50 passing.** Filter worker (`filter.js`) has no test file by design
 (see Block 6 Q5 in the Q&A log — I/O adapter, no pure logic yet; Task 9
 will extract `filter-logic.js` for testing).
 
@@ -99,9 +100,9 @@ will extract `filter-logic.js` for testing).
 
 | # | Task | Status |
 |---|---|---|
-| 11 | Analyzer interface + fake | **Next up.** `src/shared/analyzer.js` — narrow interface (`analyze(request) → analysis`) with `createFakeAnalyzer()` for tests. The seam that keeps AI worker testable without a real LLM. |
+| 12 | AI worker (Week 2 milestone) | **Next up.** Consumes `ai-analysis-requests`, calls `analyzer.analyze()` (injected — fake in tests, real Gemini in prod), writes result via `insertIncident`, produces to `diagnosed-incidents`. |
+| 12b | Real Gemini adapter | After 12 — thin `createGeminiAnalyzer({apiKey, model})` implementing the same `analyze(request)` port using `@google/generative-ai` with structured-JSON responseMimeType. |
 | ⭐ FINAL | README polish + proof-of-working screenshots | **End-of-project checklist.** Rewrite README with: architecture diagram (use `docs/design-artifact.html` as hero), quickstart, end-to-end demo screenshots (log → escalation → LLM response → dashboard). Screenshots go at the **end** of the README as visual proof. Do NOT skip — this is the interviewer's first impression of the whole build. |
-| 12 | AI worker (Week 2 milestone) | Not started — consumes `ai-analysis-requests`, calls analyzer, writes via `insertIncident`, produces to `diagnosed-incidents`. |
 
 **Also open, not blocking:** Redpanda Console UI container (`aether-console`,
 port 8080) fails to start on v2.7.2 with `unable to find user redpandaconsole`.
@@ -131,7 +132,8 @@ D:\Projects\AetherInsight\
 │   │   ├── kafka.js          ← createKafka / createProducer / runConsumer / onShutdown / TOPICS
 │   │   ├── fingerprint.js    ← normalize + sha1 (6 ordered rules, 9/9 tests green)
 │   │   ├── redis.js          ← createRedis / recordOccurrence (Lua ZSET) / claimAnalysis (SET NX EX) / pushContext (LPUSH+LTRIM) / readContext (6/6 tests green)
-│   │   └── db.js             ← createDb (pg.Pool) / insertIncident (ON CONFLICT DO NOTHING) / getIncident / listIncidents — flat columns, no ORM (6/6 tests green)
+│   │   ├── db.js             ← createDb (pg.Pool) / insertIncident (ON CONFLICT DO NOTHING) / getIncident / listIncidents — flat columns, no ORM (6/6 tests green)
+│   │   └── analyzer.js       ← analyzeRequestSchema / analysisSchema / buildPrompt / createFakeAnalyzer({delayMs, failEvery}) — port for LLM adapter, fake for tests (10/10 tests green)
 │   ├── api\
 │   │   └── server.js         ← Fastify app factory + POST /ingest + GET /healthz
 │   └── workers\
@@ -148,7 +150,8 @@ D:\Projects\AetherInsight\
     ├── fingerprint.test.js   ← 9/9 passing
     ├── redis.test.js         ← 6/6 passing (real Redis, injected timestamps for eviction test)
     ├── filter-logic.test.js  ← 4/4 passing (real Redis, no Kafka; escalate/suppress/counted paths)
-    └── db.test.js            ← 6/6 passing (real Postgres, TRUNCATE per test; round-trip + idempotency + pagination)
+    ├── db.test.js            ← 6/6 passing (real Postgres, TRUNCATE per test; round-trip + idempotency + pagination)
+    └── analyzer.test.js      ← 10/10 passing (fake analyzer: determinism, latency/failure injection, AbortSignal, buildPrompt sample cap, zod boundary checks)
 
 vitest.config.js               ← fileParallelism: false — serialize test files so real-Redis flushdb doesn't race across files
 
@@ -291,7 +294,7 @@ port.
 
 ## 10. Q&A log structure
 
-**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 1772 lines
+**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 2010 lines
 as of 2026-08-13. Append-only.
 
 **Blocks written:**
@@ -317,9 +320,13 @@ as of 2026-08-13. Append-only.
   `ON CONFLICT DO NOTHING` idempotency, flat vs JSONB, no-ORM revisit,
   real-Postgres tests, jsonb round-trip, prepared statements, schema.sql
   as init seed (10 Q&As)
+- **Block 11** — Analyzer port + fake adapter: ports-and-adapters pattern,
+  fakes vs mocks (Fowler), factory functions for per-instance state,
+  deterministic output from fingerprint, AbortSignal, buildPrompt as
+  separate helper, sample cap defense-in-depth, boundary validation,
+  optional GEMINI_API_KEY, failEvery vs failRate (10 Q&As)
 
 **Blocks planned:**
-- Block 11 — The fake-analyzer seam (testability without LLM)
 - Block 12 — End-to-end trace, backpressure, observability
 
 ---
