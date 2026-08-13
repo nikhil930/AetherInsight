@@ -5,7 +5,7 @@ const schema = z.object({
   LOG_LEVEL:          z.string().default('info'),
   KAFKA_BROKERS:      z.string().default('localhost:19092'),
   REDIS_URL:          z.string().default('redis://localhost:6379'),
-  DATABASE_URL:       z.string().default('postgres://aether:aether@localhost:5432/aetherinsight'),
+  DATABASE_URL:       z.string().default('postgres://aether:aether@localhost:5434/aetherinsight'),
   API_PORT:           z.coerce.number().int().positive().default(3000),
   WINDOW_SECONDS:     z.coerce.number().int().positive().default(10),
   ALERT_THRESHOLD:    z.coerce.number().int().positive().default(50),
