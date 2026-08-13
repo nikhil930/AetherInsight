@@ -11,6 +11,8 @@ const schema = z.object({
   ALERT_THRESHOLD:    z.coerce.number().int().positive().default(50),
   CLAIM_TTL_SECONDS:  z.coerce.number().int().positive().default(900),
   CONTEXT_SAMPLES:    z.coerce.number().int().positive().default(20),
+  GEMINI_API_KEY:     z.string().optional(),
+  GEMINI_MODEL:       z.string().default('gemini-2.0-flash'),
 });
 
 export function loadConfig(env) {
