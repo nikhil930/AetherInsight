@@ -5,7 +5,7 @@ should read this first. It captures what the project is, what has been built,
 what is still pending, which decisions are locked in, and the ground rules
 the user has set.
 
-Last updated: 2026-08-11 (Task 9 complete — filter worker wired to detection, end-to-end escalation verified, 34/34 tests green).
+Last updated: 2026-08-13 (Task 10 complete — Postgres access layer built and verified against live DB, 40/40 tests green).
 
 ---
 
@@ -79,8 +79,9 @@ suppress the exact storms the system exists to detect.
 | 7 | Fingerprint (normalize + sha1) | `src/shared/fingerprint.js` | 9/9 | ✅ UUID/IPv4/hex/quoted/number/whitespace rules; ordering trap covered by tests |
 | 8 | Redis: sliding window (ZSET+Lua) / claim (`SET NX EX`) / context buffer (LPUSH+LTRIM) | `src/shared/redis.js`, `scripts/seed-redis-inspect.mjs` | 6/6 | ✅ Verified against live Redis: eviction, per-service isolation, claim once-only, LTRIM cap; keys inspected via `redis-cli` |
 | 9 | Filter worker wired to detection (pure `filter-logic.js` + thin Kafka adapter `filter.js`) | `src/workers/filter-logic.js`, `src/workers/filter.js` (rewritten), `test/filter-logic.test.js`, `vitest.config.js` | 4/4 | ✅ End-to-end: 10 same-shape logs → exactly 1 `incident escalated` line, exactly 1 message on `ai-analysis-requests` topic with correct fingerprint + samples |
+| 10 | Postgres access layer (pool + insertIncident + getIncident + listIncidents, hand-written SQL, no ORM) | `src/shared/db.js`, `test/db.test.js` | 6/6 | ✅ Real-Postgres tests: round-trip all columns incl. jsonb `sample_logs`, `ON CONFLICT (id) DO NOTHING` idempotency (same id twice = 1 row), listIncidents newest-first ordering, service_id filter, pagination |
 
-**Total tests: 34/34 passing.** Filter worker (`filter.js`) has no test file by design
+**Total tests: 40/40 passing.** Filter worker (`filter.js`) has no test file by design
 (see Block 6 Q5 in the Q&A log — I/O adapter, no pure logic yet; Task 9
 will extract `filter-logic.js` for testing).
 
@@ -98,9 +99,9 @@ will extract `filter-logic.js` for testing).
 
 | # | Task | Status |
 |---|---|---|
-| 10 | Postgres access layer | **Next up.** `src/shared/db.js` — connection pool + insertIncident / getIncident with hand-written SQL. |
-| 11 | Analyzer interface + fake | Not started |
-| 12 | AI worker (Week 2 milestone) | Not started |
+| 11 | Analyzer interface + fake | **Next up.** `src/shared/analyzer.js` — narrow interface (`analyze(request) → analysis`) with `createFakeAnalyzer()` for tests. The seam that keeps AI worker testable without a real LLM. |
+| ⭐ FINAL | README polish + proof-of-working screenshots | **End-of-project checklist.** Rewrite README with: architecture diagram (use `docs/design-artifact.html` as hero), quickstart, end-to-end demo screenshots (log → escalation → LLM response → dashboard). Screenshots go at the **end** of the README as visual proof. Do NOT skip — this is the interviewer's first impression of the whole build. |
+| 12 | AI worker (Week 2 milestone) | Not started — consumes `ai-analysis-requests`, calls analyzer, writes via `insertIncident`, produces to `diagnosed-incidents`. |
 
 **Also open, not blocking:** Redpanda Console UI container (`aether-console`,
 port 8080) fails to start on v2.7.2 with `unable to find user redpandaconsole`.
@@ -129,7 +130,8 @@ D:\Projects\AetherInsight\
 │   │   ├── events.js         ← envelope + rawLogSchema + analysisRequestSchema
 │   │   ├── kafka.js          ← createKafka / createProducer / runConsumer / onShutdown / TOPICS
 │   │   ├── fingerprint.js    ← normalize + sha1 (6 ordered rules, 9/9 tests green)
-│   │   └── redis.js          ← createRedis / recordOccurrence (Lua ZSET) / claimAnalysis (SET NX EX) / pushContext (LPUSH+LTRIM) / readContext (6/6 tests green)
+│   │   ├── redis.js          ← createRedis / recordOccurrence (Lua ZSET) / claimAnalysis (SET NX EX) / pushContext (LPUSH+LTRIM) / readContext (6/6 tests green)
+│   │   └── db.js             ← createDb (pg.Pool) / insertIncident (ON CONFLICT DO NOTHING) / getIncident / listIncidents — flat columns, no ORM (6/6 tests green)
 │   ├── api\
 │   │   └── server.js         ← Fastify app factory + POST /ingest + GET /healthz
 │   └── workers\
@@ -145,12 +147,13 @@ D:\Projects\AetherInsight\
     ├── api.test.js
     ├── fingerprint.test.js   ← 9/9 passing
     ├── redis.test.js         ← 6/6 passing (real Redis, injected timestamps for eviction test)
-    └── filter-logic.test.js  ← 4/4 passing (real Redis, no Kafka; escalate/suppress/counted paths)
+    ├── filter-logic.test.js  ← 4/4 passing (real Redis, no Kafka; escalate/suppress/counted paths)
+    └── db.test.js            ← 6/6 passing (real Postgres, TRUNCATE per test; round-trip + idempotency + pagination)
 
 vitest.config.js               ← fileParallelism: false — serialize test files so real-Redis flushdb doesn't race across files
 
 D:\Interview_material_NR\Claude Project QnA.txt
-    ← append-only interview Q&A log, currently 1528 lines, Blocks 0–8 done
+    ← append-only interview Q&A log, currently 1772 lines, Blocks 0–10 done
 ```
 
 ---
@@ -270,12 +273,26 @@ docker exec aether-postgres psql -U aether -d aetherinsight -c "\dt"
 docker compose down -v
 ```
 
+**Port note:** the Postgres container maps to host port **5434** (not 5432).
+This machine already has native postgresql-x64-15 and postgresql-x64-17
+services holding 5432 + 5433, so our container uses 5434 to avoid the
+conflict silently routing to the wrong DB. From host tools (pgAdmin,
+DBeaver, `psql` on the Windows path), connect with:
+
+```
+Host: localhost   Port: 5434   User: aether   Password: aether   DB: aetherinsight
+```
+
+`docker exec aether-postgres psql -U aether -d aetherinsight` still works
+because it uses the container-internal socket, unaffected by the mapped
+port.
+
 ---
 
 ## 10. Q&A log structure
 
-**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 1528 lines
-as of 2026-08-11. Append-only.
+**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 1772 lines
+as of 2026-08-13. Append-only.
 
 **Blocks written:**
 - **Block 0** — Architecture and design decisions (10 Q&As). Written before
@@ -292,10 +309,16 @@ as of 2026-08-11. Append-only.
 - **Block 8** — Redis primitives: ZSET vs INCR, Lua vs MULTI, defineCommand,
   KEYS/ARGV convention, randomUUID member trick, SET NX EX vs Redlock,
   LPUSH/LTRIM/EXPIRE ordering, real-Redis vs mocks (10 Q&As)
+- **Block 9** — Filter worker wiring: ports-and-adapters, count-before-dedup
+  ordering rule, pushContext-before-recordOccurrence, deps injection,
+  escalated payload shape, vitest fileParallelism race, Kafka partition
+  ownership as mutex, plan-vs-code drift (10 Q&As)
+- **Block 10** — Postgres access: pool vs client, parameterized queries,
+  `ON CONFLICT DO NOTHING` idempotency, flat vs JSONB, no-ORM revisit,
+  real-Postgres tests, jsonb round-trip, prepared statements, schema.sql
+  as init seed (10 Q&As)
 
 **Blocks planned:**
-- Block 9 — The count-before-dedup ordering decision (Task 9)
-- Block 10 — Postgres access, connection pooling
 - Block 11 — The fake-analyzer seam (testability without LLM)
 - Block 12 — End-to-end trace, backpressure, observability
 

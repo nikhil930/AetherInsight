@@ -3,7 +3,7 @@
 > Revision-ready reference. Every choice below has a reason. Interviewers
 > probe reasons, not code. Read section by section — each is standalone.
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-13 (added §12.18 flat vs JSONB for the incidents table).
 
 ---
 
@@ -546,14 +546,40 @@ If asked...
 
 ---
 
-### 12.18 Master crib sheet (memorize the punchlines)
+### 12.18 Flat columns vs JSONB payload (the `incidents` table)
+
+**Interview (10 s):**
+> "The incident row's fields are known and small — service_id, fingerprint, summary, cause, fix, severity, counts, LLM metadata. Flat columns give me typed storage, indexable filters (`WHERE severity='high'`), and SQL that reads like the domain. JSONB would push all of that into `payload->>'severity'` casts and a GIN index — right choice when the shape is unknown or wildly variable, wrong choice when it isn't."
+
+**Long (learning):**
+- **What flat gives us:**
+  - Column types enforce shape (`confidence real`, `occurrence_count int`, `created_at timestamptz`) — malformed writes fail at INSERT, not at read time.
+  - Btree indexes on `(service_id, created_at DESC)` and `(fingerprint, created_at DESC)` — the two access patterns the dashboard needs — are cheap and stay tight.
+  - `EXPLAIN` shows real column reads, not `jsonb_path_ops` gymnastics.
+  - Migrations are visible: `ALTER TABLE incidents ADD COLUMN ...` is a diff a reviewer can approve.
+- **What JSONB would have given us:**
+  - Zero-migration additions: LLM changes its output shape? Just write the new key.
+  - Native document semantics; the whole LLM response goes in as one blob.
+  - GIN indexes for arbitrary key lookup (`payload @> '{"severity":"high"}'`) — powerful but pricey.
+- **Why JSONB is the wrong pick here specifically:**
+  - The incident shape is *known* — the analyzer schema (Task 11) will enforce it before Postgres ever sees the row. There is no "unknown shape" problem to solve.
+  - Every dashboard query is either "recent incidents for service X" or "distinct fingerprints in last hour" — both are relational filter-and-sort, not document-shape queries.
+  - Interviewer test: "show me the query that lists high-severity incidents from payments in the last hour." Flat: `SELECT id, title, created_at FROM incidents WHERE service_id='payments' AND severity='high' AND created_at > now() - interval '1 hour' ORDER BY created_at DESC LIMIT 50` — reads like the sentence. JSONB: `WHERE payload->>'service_id'='payments' AND payload->>'severity'='high'` with `::text` casts everywhere.
+- **Where we still use JSONB (compromise):**
+  - `sample_logs jsonb` — a variable-length array of raw strings. Storing it as a real column would be `text[]` (Postgres array) or a child table. JSONB is fine because it's read as a whole (fed to the LLM later, never filtered by).
+  - `dead_letters.payload jsonb` — by definition an unknown shape; that's what dead-letter storage IS.
+- **Migration cost of being wrong:** low. `ALTER TABLE incidents ADD COLUMN raw_payload jsonb` + a UPDATE backfill can convert flat → JSONB later. The reverse (JSONB → flat) is also possible but reveals every place where the LLM wrote an unexpected shape. Start flat; regret is cheap.
+
+---
+
+### 12.19 Master crib sheet (memorize the punchlines)
 
 | Choice | Chosen | One-line why |
 |---|---|---|
 | Broker | Redpanda | Kafka wire, no JVM/ZK, boots in 2 s |
 | Runtime | Node.js | I/O-bound; one language across stack |
 | Hot state | Redis | ZSET/List/Lua give us the primitives we need |
-| Durable state | Postgres | Relational fit + JSONB flexibility |
+| Durable state | Postgres | Relational fit; flat columns for typed writes + indexable filters |
 | HTTP framework | Fastify | 2× Express, schema-first, modern defaults |
 | Redis client | ioredis | Cluster-ready + defineCommand for Lua |
 | Kafka client | KafkaJS | Pure JS, painless install on Windows |
