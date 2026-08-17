@@ -5,7 +5,7 @@ should read this first. It captures what the project is, what has been built,
 what is still pending, which decisions are locked in, and the ground rules
 the user has set.
 
-Last updated: 2026-08-13 (Task 11 complete — analyzer interface + createFakeAnalyzer built, 50/50 tests green; Gemini env vars wired into config).
+Last updated: 2026-08-13 (Task 12b complete — real Gemini adapter live and tested against `gemini-flash-latest` on the free tier. 63/63 tests green, including 2 live-API round-trips. AI worker now auto-selects Gemini when `GEMINI_API_KEY` is present, fake otherwise. Only remaining task: README + proof screenshots).
 
 ---
 
@@ -58,6 +58,8 @@ suppress the exact storms the system exists to detect.
 | Cache/state | Redis | 7-alpine | Sliding windows, idempotency claims |
 | DB | Postgres | 16-alpine | Source of truth for incidents |
 | Postgres driver | `pg` | 8.12 | **No ORM** — hand-written SQL |
+| LLM SDK | `@google/genai` | 2.17 | Modern unified Gemini SDK (supersedes `@google/generative-ai`); free-tier friendly |
+| Env loader | `dotenv` | 17 | Loads `.env` for workers + tests |
 | Schema | zod | 3.23 | Config + payload validation |
 | Logger | pino + pino-pretty | 9.4 | Structured JSON in prod, human in dev |
 | Tests | vitest | 2.1 | ESM-native, fast |
@@ -80,9 +82,11 @@ suppress the exact storms the system exists to detect.
 | 8 | Redis: sliding window (ZSET+Lua) / claim (`SET NX EX`) / context buffer (LPUSH+LTRIM) | `src/shared/redis.js`, `scripts/seed-redis-inspect.mjs` | 6/6 | ✅ Verified against live Redis: eviction, per-service isolation, claim once-only, LTRIM cap; keys inspected via `redis-cli` |
 | 9 | Filter worker wired to detection (pure `filter-logic.js` + thin Kafka adapter `filter.js`) | `src/workers/filter-logic.js`, `src/workers/filter.js` (rewritten), `test/filter-logic.test.js`, `vitest.config.js` | 4/4 | ✅ End-to-end: 10 same-shape logs → exactly 1 `incident escalated` line, exactly 1 message on `ai-analysis-requests` topic with correct fingerprint + samples |
 | 10 | Postgres access layer (pool + insertIncident + getIncident + listIncidents, hand-written SQL, no ORM) | `src/shared/db.js`, `test/db.test.js` | 6/6 | ✅ Real-Postgres tests: round-trip all columns incl. jsonb `sample_logs`, `ON CONFLICT (id) DO NOTHING` idempotency (same id twice = 1 row), listIncidents newest-first ordering, service_id filter, pagination |
-| 11 | Analyzer interface + fake (ports-and-adapters seam for the AI worker) | `src/shared/analyzer.js`, `test/analyzer.test.js` | 10/10 | ✅ Deterministic output per fingerprint, latency injection via `delayMs`, failure injection via `failEvery`, AbortSignal cancellation, buildPrompt caps samples at 5, zod boundary validation on both request and response; Gemini env vars (`GEMINI_API_KEY` optional, `GEMINI_MODEL` default `gemini-2.0-flash`) added to config |
+| 11 | Analyzer interface + fake (ports-and-adapters seam for the AI worker) | `src/shared/analyzer.js`, `test/analyzer.test.js` | 12/12 | ✅ Deterministic output per fingerprint, latency injection via `delayMs`, failure injection via `failEvery`, AbortSignal cancellation, buildPrompt caps samples at 5, six DB-aligned fields (title, summary, probable_cause, suggested_fix, confidence, severity), severity ladder derived from occurrence_count in fake; Gemini env vars (`GEMINI_API_KEY` optional, `GEMINI_MODEL` default `gemini-2.0-flash`) added to config |
+| 12 | AI worker: pure `ai-worker-logic.js` (analyze → insert → produce with idempotency chain) + thin `ai-worker.js` Kafka adapter; `incident.diagnosed` event type added; `insertDeadLetter` added to db.js | `src/workers/ai-worker-logic.js`, `src/workers/ai-worker.js`, `test/ai-worker-logic.test.js`, `src/shared/events.js` (new event type), `src/shared/db.js` (insertDeadLetter) | 5/5 | ✅ End-to-end: happy path writes incident + produces to diagnosed-incidents; same event twice → 1 DB row + 1 produced message (idempotency chain: Redis claim → envelope id reuse → ON CONFLICT DO NOTHING); analyzer failure → dead_letters row + no produce; two distinct events → 2 rows + 2 produced messages with correct incident_id linkage |
+| 12b | Real Gemini adapter (`createGeminiAnalyzer` using `@google/genai` SDK, structured JSON via `responseMimeType` + `responseSchema`, `abortSignal` support, populates `llm_model` + `llm_tokens` from `usageMetadata`, wraps SDK errors with `gemini:` prefix); `ai-worker.js` auto-selects real vs fake based on `GEMINI_API_KEY`; `dotenv` added for `.env` loading in workers/tests; model pinned to `gemini-flash-latest` (survives Gemini deprecation cycles) | `src/shared/gemini-analyzer.js`, `src/workers/ai-worker.js` (analyzer selection), `test/gemini-analyzer.test.js`, `test/setup.js` (dotenv side-effect), `vitest.config.js` (setupFiles), `src/shared/config.js` (dotenv/config import + model default) | 6/6 | ✅ 3 construction tests (missing apiKey, missing model, ok shape) + 3 live-API tests (skip if no key): returns valid analysisSchema shape, populates llm_model + llm_tokens from usageMetadata, wraps SDK errors with `gemini:` prefix on bogus key. Live round-trips ~5-6s each. |
 
-**Total tests: 50/50 passing.** Filter worker (`filter.js`) has no test file by design
+**Total tests: 63/63 passing** (60 offline + 3 live Gemini round-trips when `GEMINI_API_KEY` is set). Filter worker (`filter.js`) has no test file by design
 (see Block 6 Q5 in the Q&A log — I/O adapter, no pure logic yet; Task 9
 will extract `filter-logic.js` for testing).
 
@@ -100,9 +104,7 @@ will extract `filter-logic.js` for testing).
 
 | # | Task | Status |
 |---|---|---|
-| 12 | AI worker (Week 2 milestone) | **Next up.** Consumes `ai-analysis-requests`, calls `analyzer.analyze()` (injected — fake in tests, real Gemini in prod), writes result via `insertIncident`, produces to `diagnosed-incidents`. |
-| 12b | Real Gemini adapter | After 12 — thin `createGeminiAnalyzer({apiKey, model})` implementing the same `analyze(request)` port using `@google/generative-ai` with structured-JSON responseMimeType. |
-| ⭐ FINAL | README polish + proof-of-working screenshots | **End-of-project checklist.** Rewrite README with: architecture diagram (use `docs/design-artifact.html` as hero), quickstart, end-to-end demo screenshots (log → escalation → LLM response → dashboard). Screenshots go at the **end** of the README as visual proof. Do NOT skip — this is the interviewer's first impression of the whole build. |
+| ⭐ FINAL | README polish + proof-of-working screenshots | **Next up — only remaining task.** Rewrite README with: architecture diagram (use `docs/design-artifact.html` as hero), quickstart, end-to-end demo screenshots (log posted → filter escalates → Gemini diagnosis → incident row in DB → diagnosed-incidents message). Screenshots go at the **end** of the README as visual proof. Do NOT skip — this is the interviewer's first impression of the whole build. |
 
 **Also open, not blocking:** Redpanda Console UI container (`aether-console`,
 port 8080) fails to start on v2.7.2 with `unable to find user redpandaconsole`.
@@ -132,13 +134,16 @@ D:\Projects\AetherInsight\
 │   │   ├── kafka.js          ← createKafka / createProducer / runConsumer / onShutdown / TOPICS
 │   │   ├── fingerprint.js    ← normalize + sha1 (6 ordered rules, 9/9 tests green)
 │   │   ├── redis.js          ← createRedis / recordOccurrence (Lua ZSET) / claimAnalysis (SET NX EX) / pushContext (LPUSH+LTRIM) / readContext (6/6 tests green)
-│   │   ├── db.js             ← createDb (pg.Pool) / insertIncident (ON CONFLICT DO NOTHING) / getIncident / listIncidents — flat columns, no ORM (6/6 tests green)
-│   │   └── analyzer.js       ← analyzeRequestSchema / analysisSchema / buildPrompt / createFakeAnalyzer({delayMs, failEvery}) — port for LLM adapter, fake for tests (10/10 tests green)
+│   │   ├── db.js             ← createDb (pg.Pool) / insertIncident (ON CONFLICT DO NOTHING) / getIncident / listIncidents / insertDeadLetter — flat columns, no ORM (6/6 tests green)
+│   │   ├── analyzer.js       ← analyzeRequestSchema / analysisSchema (title, summary, probable_cause, suggested_fix, confidence, severity, +optional llm_model/llm_tokens) / buildPrompt / createFakeAnalyzer({delayMs, failEvery}) — port for LLM adapter, fake for tests (12/12 tests green)
+│   │   └── gemini-analyzer.js ← createGeminiAnalyzer({apiKey, model}) — real LLM adapter using @google/genai; responseMimeType + responseSchema for guaranteed valid JSON; abortSignal support; wraps SDK errors as "gemini: ..." (6/6 tests green — 3 construction + 3 live-API)
 │   ├── api\
 │   │   └── server.js         ← Fastify app factory + POST /ingest + GET /healthz
 │   └── workers\
 │       ├── filter.js         ← thin Kafka adapter: consume raw-logs → processLog → produce to ai-analysis-requests on escalate
-│       └── filter-logic.js   ← pure decision logic: fingerprint + count + claim; testable without Kafka (4/4 tests)
+│       ├── filter-logic.js   ← pure decision logic: fingerprint + count + claim; testable without Kafka (4/4 tests)
+│       ├── ai-worker.js      ← thin Kafka adapter: consume ai-analysis-requests → processRequest → produce to diagnosed-incidents on fresh insert
+│       └── ai-worker-logic.js ← pure logic: analyzer.analyze → insertIncident → producer.send; dead_letters on failure; skip-produce on duplicate (5/5 tests)
 ├── scripts\
 │   ├── create-topics.js
 │   └── seed-redis-inspect.mjs  ← seeds win/claim/ctx keys for hand-inspection via redis-cli
@@ -151,9 +156,12 @@ D:\Projects\AetherInsight\
     ├── redis.test.js         ← 6/6 passing (real Redis, injected timestamps for eviction test)
     ├── filter-logic.test.js  ← 4/4 passing (real Redis, no Kafka; escalate/suppress/counted paths)
     ├── db.test.js            ← 6/6 passing (real Postgres, TRUNCATE per test; round-trip + idempotency + pagination)
-    └── analyzer.test.js      ← 10/10 passing (fake analyzer: determinism, latency/failure injection, AbortSignal, buildPrompt sample cap, zod boundary checks)
+    ├── analyzer.test.js      ← 12/12 passing (fake analyzer: determinism, severity ladder, latency/failure injection, AbortSignal, buildPrompt sample cap, zod boundary checks)
+    ├── ai-worker-logic.test.js ← 5/5 passing (real Postgres + fake analyzer + spy producer: happy path, idempotency, dead_letter on analyzer failure, severity ladder, distinct events)
+    ├── gemini-analyzer.test.js ← 6/6 passing (3 construction + 3 live-API round-trips; live tests skip when GEMINI_API_KEY is absent)
+    └── setup.js              ← dotenv/config side-effect import, loaded via vitest.config.js setupFiles
 
-vitest.config.js               ← fileParallelism: false — serialize test files so real-Redis flushdb doesn't race across files
+vitest.config.js               ← fileParallelism: false; setupFiles: ['./test/setup.js'] (loads .env for live Gemini tests)
 
 D:\Interview_material_NR\Claude Project QnA.txt
     ← append-only interview Q&A log, currently 1772 lines, Blocks 0–10 done
@@ -294,7 +302,7 @@ port.
 
 ## 10. Q&A log structure
 
-**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 2010 lines
+**File:** `D:\Interview_material_NR\Claude Project QnA.txt` — 2610 lines
 as of 2026-08-13. Append-only.
 
 **Blocks written:**
@@ -325,9 +333,23 @@ as of 2026-08-13. Append-only.
   deterministic output from fingerprint, AbortSignal, buildPrompt as
   separate helper, sample cap defense-in-depth, boundary validation,
   optional GEMINI_API_KEY, failEvery vs failRate (10 Q&As)
+- **Block 12** — AI worker end-to-end: message flow walkthrough, three-link
+  idempotency chain (Redis claim + envelope id reuse + ON CONFLICT), skip
+  produce on duplicate insert, analyzer output aligned to DB columns,
+  dead_letter TABLE vs dead-letter TOPIC, LLM latency instrumentation,
+  top-level await, real Postgres + spy producer asymmetry, shallow spread
+  fixture bug, offset commit + retry strategy (10 Q&As)
+- **Block 13** — Real Gemini adapter: `@google/genai` unified SDK choice,
+  responseMimeType + responseSchema for guaranteed valid JSON, dual-schema
+  duplication vs auto-conversion, Gemini model deprecation lessons,
+  dotenv adoption at first-secret boundary, composition-root pattern for
+  real-vs-fake selection, optional llm_model/llm_tokens for NULL-as-
+  provenance, gemini: error prefix for log searchability, live tests as
+  smoke detectors (10 Q&As)
 
-**Blocks planned:**
-- Block 12 — End-to-end trace, backpressure, observability
+**Blocks planned:** none — Q&A log covers every task in the foundation
+plan. Additional blocks would come with new features beyond the current
+scope (dashboard, chaos tests, deploy targets).
 
 ---
 

@@ -20,9 +20,22 @@ export const analysisRequestSchema = z.object({
   sample_logs:      z.array(z.string()).min(1),
 });
 
+export const incidentDiagnosedSchema = z.object({
+  incident_id:      z.string().uuid(),
+  service_id:       z.string().min(1),
+  fingerprint:      z.string().length(40),
+  title:            z.string().min(1),
+  summary:          z.string().min(1),
+  severity:         z.enum(['low', 'medium', 'high', 'critical']),
+  confidence:       z.number().min(0).max(1),
+  occurrence_count: z.number().int().positive(),
+  window_seconds:   z.number().int().positive(),
+});
+
 const PAYLOADS = {
   'log.raw':            rawLogSchema,
   'analysis.requested': analysisRequestSchema,
+  'incident.diagnosed': incidentDiagnosedSchema,
 };
 
 function schemaFor(type) {

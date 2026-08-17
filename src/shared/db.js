@@ -74,3 +74,17 @@ export async function listIncidents(pool, { service_id = null, limit = 50, offse
   const { rows } = await pool.query(LIST_INCIDENTS_SQL, [service_id, limit, offset]);
   return rows;
 }
+
+const INSERT_DEAD_LETTER_SQL = `
+  INSERT INTO dead_letters (id, source_topic, payload, error, attempts)
+  VALUES ($1, $2, $3::jsonb, $4, $5)
+  RETURNING id
+`;
+
+export async function insertDeadLetter(pool, entry) {
+  const { id, source_topic, payload, error, attempts = 0 } = entry;
+  const { rows } = await pool.query(INSERT_DEAD_LETTER_SQL, [
+    id, source_topic, JSON.stringify(payload), error, attempts,
+  ]);
+  return { id: rows[0].id };
+}
