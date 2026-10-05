@@ -2,7 +2,7 @@
 
 A real-time distributed log analyzer that watches error streams from multiple services, detects when a pattern is "storming," and asks an LLM (Google Gemini) to diagnose the root cause — writing structured incidents to Postgres and notifying downstream consumers via Kafka.
 
-This is a portfolio project I built to learn distributed-systems patterns hands-on: Kafka topics as async pipelines, Redis for hot-path counting and idempotency, Postgres as a system of record, and a fake/real analyzer split so I could develop the pipeline before touching a paid API.
+This is a project I built to learn distributed-systems patterns hands-on: Kafka topics as async pipelines, Redis for hot-path counting and idempotency, Postgres as a system of record, and a fake/real analyzer split so I could develop the pipeline before touching a paid API.
 
 ---
 
